@@ -3,15 +3,24 @@ NOTE: This script contains the algorithm for RAG
  */
 #include "image_covering_coordination/total_score_collectiveFOV_logger.h"
 
-TotalScoreCollectiveFovLogger::TotalScoreCollectiveFovLogger(ros::NodeHandle& nh)
-    : node_handle_(nh)
+TotalScoreCollectiveFovLogger::TotalScoreCollectiveFovLogger()
+    : rclcpp::Node("total_score_collective_fov_logger")
 {
     // Get ROS params
-    ros::param::get("~number_of_drones", num_robots_);
-    ros::param::get("~algorithm_to_run", algorithm_to_run_);
-    ros::param::get("~experiment_number", experiment_number_);
-    ros::param::get("~num_nearest_neighbors", num_nearest_neighbors_);
-    ros::param::get("~is_server_experiment", is_server_experiment_); // treat as bool; 0 is false, 1 is true
+    this->declare_parameter<int>("number_of_drones", 1);
+    this->get_parameter("number_of_drones", num_robots_);
+
+    this->declare_parameter<std::string>("algorithm_to_run", "default");
+    this->get_parameter("algorithm_to_run", algorithm_to_run_);
+
+    this->declare_parameter<int>("experiment_number", 0);
+    this->get_parameter("experiment_number", experiment_number_);
+
+    this->declare_parameter<int>("num_nearest_neighbors", 3);
+    this->get_parameter("num_nearest_neighbors", num_nearest_neighbors_);
+
+    this->declare_parameter<int>("is_server_experiment", 0);
+    this->get_parameter("is_server_experiment", is_server_experiment_);
 
     std::cout << "ALGORITHM: " << algorithm_to_run_ << std::endl;
 
@@ -20,7 +29,11 @@ TotalScoreCollectiveFovLogger::TotalScoreCollectiveFovLogger(ros::NodeHandle& nh
 
     // ROS subscribers
     // NOTE!!! Subscribe to /clock topic for putting a callback which checks whether n_time_step_ amount of time has passed
-    get_drones_images_sub_ = node_handle_.subscribe("/clock", 1, &TotalScoreCollectiveFovLogger::getRobotsBestImages, this);
+    get_drones_images_sub_ = this->create_subscription<rosgraph_msgs::msg::Clock>(
+        "/clock", 
+        1,
+        std::bind(&TotalScoreCollectiveFovLogger::getRobotsBestImages, this, std::placeholders::_1)
+    );
     // check_drones_selection_sub_ = node_handle_.subscribe("/clock", 1, &TotalScoreCollectiveFovLogger::updateAllRobotsSelectionStatusCallback, this);
 
     fov_y_ = M_PI / 2.; // in rads; 90 deg horizontal fov
@@ -77,20 +90,28 @@ TotalScoreCollectiveFovLogger::~TotalScoreCollectiveFovLogger()
     // async_spinner_->stop();
 }
 
-void TotalScoreCollectiveFovLogger::updateAllRobotsSelectionStatusCallback(const rosgraph_msgs::Clock& msg)
+
+/////////////////////--------------------------------------------------------------------////////////////////////////
+
+void TotalScoreCollectiveFovLogger::updateAllRobotsSelectionStatusCallback(const rosgraph_msgs::msg::Clock::SharedPtr msg)
 {
     /* SUBSCRIBES to marginal gain message which contains action selection flag */
 
-    ros::Duration timeout(2.5); // Timeout seconds
+    // auto timeout = rclcpp::Duration::from_seconds(2.5);
     for (int i = 0; i < num_robots_; i++) {
         int other_robot_id = i + 1;
         std::string mg_msg_topic = "Drone" + std::to_string(other_robot_id) + "/mg_rag_data";
         // std::cout << "MG MSG TOPIC: " << mg_msg_topic << std::endl;
 
-        image_covering_coordination::ImageCoveringConstPtr mg_data_msg = ros::topic::waitForMessage<image_covering_coordination::ImageCovering>(mg_msg_topic, timeout);
-
+        using ImageCoveringMsg = image_covering_coordination::msg::ImageCovering;
+        auto mg_data_msg = waitForMessage<image_covering_coordination::msg::ImageCovering>(
+            this->shared_from_this(),
+            mg_msg_topic,
+            std::chrono::seconds(2)
+        );
+        
         if (mg_data_msg) {
-            image_covering_coordination::ImageCovering mg_msg_topic_data = *mg_data_msg;
+            image_covering_coordination::msg::ImageCovering mg_msg_topic_data = *mg_data_msg;
             all_robots_selected_map_[i + 1] = mg_msg_topic_data.flag_completed_action_selection;
             // std::cout <<  "got mg msg from robot " + std::to_string(other_robot_id) << std::endl;
         }
@@ -100,22 +121,26 @@ void TotalScoreCollectiveFovLogger::updateAllRobotsSelectionStatusCallback(const
             //    std::cout << "could not get mg msg from robot " + std::to_string(other_robot_id) << std::endl;
         }
     }
-    std::cout << "" << std::endl;
 }
 
-void TotalScoreCollectiveFovLogger::getRobotsBestImages(const rosgraph_msgs::Clock& msg)
+void TotalScoreCollectiveFovLogger::getRobotsBestImages(const rosgraph_msgs::msg::Clock::SharedPtr msg)
 {
     /* SUBSCRIBES to marginal gain message which contains action selection flag */
 
-    ros::Duration timeout(2.5); // Timeout seconds
+    // auto timeout = rclcpp::Duration::from_seconds(2.5); // Timeout seconds
     for (int i = 0; i < num_robots_; i++) {
         int other_robot_id = i + 1;
         std::string mg_msg_topic = "Drone" + std::to_string(other_robot_id) + "/mg_rag_data";
         // std::cout << "MG MSG TOPIC: " << mg_msg_topic << std::endl;
+        using ImageCoveringMsg = image_covering_coordination::msg::ImageCovering;
+        auto mg_data_msg = waitForMessage<image_covering_coordination::msg::ImageCovering>(
+            this->shared_from_this(),
+            mg_msg_topic,
+            std::chrono::seconds(2)
+        );        
 
-        image_covering_coordination::ImageCoveringConstPtr mg_data_msg = ros::topic::waitForMessage<image_covering_coordination::ImageCovering>(mg_msg_topic, timeout);
         if (mg_data_msg) {
-            image_covering_coordination::ImageCovering mg_msg_topic_data = *mg_data_msg;
+            image_covering_coordination::msg::ImageCovering mg_msg_topic_data = *mg_data_msg;
             ImageInfoStruct image_info;
             image_info.pose = mg_msg_topic_data.pose;
             image_info.image = mg_msg_topic_data.image;
@@ -130,10 +155,9 @@ void TotalScoreCollectiveFovLogger::getRobotsBestImages(const rosgraph_msgs::Clo
         }
         else {
             all_robots_selected_map_[i + 1] = false;
-            std::cout << "could not get mg msg from robot " << other_robot_id << std::endl;
+            RCLCPP_WARN(this->get_logger(), "could nOT get mg msg from robot %d", other_robot_id);
         }
     }
-    std::cout << "" << std::endl;
 
     // check if all robots finished selecting actions and are publishing their latest best image
     bool robots_finished_selection = areAllValuesTrue();
@@ -145,7 +169,7 @@ void TotalScoreCollectiveFovLogger::getRobotsBestImages(const rosgraph_msgs::Clo
     if (robots_finished_selection) {
         // time_elapsed_sum_ += logging_interval;
 
-        std::cout << "logging interval: " << logging_interval << std::endl;
+        RCLCPP_INFO(this->get_logger(), "Logging interval: %f", logging_interval);
         // std::cout << "time elapsed: " << time_elapsed_sum_ << std::endl;
 
         double time_wo_imcol;
@@ -162,13 +186,12 @@ void TotalScoreCollectiveFovLogger::getRobotsBestImages(const rosgraph_msgs::Clo
             }
         }
 
-        std::cout << "time_wo_imcol: " << time_wo_imcol << std::endl;
+        RCLCPP_INFO(this->get_logger(), "time_wo_imcol: %f", time_wo_imcol);
 
         logTotalScoreCollectiveFOV(time_wo_imcol); // function to calculate and log total score
 
         t_minus_1_stamp_ = time_wo_imcol; // recording this after logging; this is the last timestamp
-        std::cout << "t-1 timestamp: " << t_minus_1_stamp_ << std::endl;
-        std::cout << " " << std::endl;
+        RCLCPP_INFO(this->get_logger(), "t-1 timestamp: %f", t_minus_1_stamp_);
 
         start_ = std::chrono::high_resolution_clock::now();
     }
@@ -196,12 +219,11 @@ void TotalScoreCollectiveFovLogger::logTotalScoreCollectiveFOV(double duration_l
     score_data_.emplace_back(duration_last, total_score_collective_fov);
     pic_name_counter_++;
 
-    std::cout << "total score: " << total_score_collective_fov << std::endl;
+    RCLCPP_INFO(this->get_logger(), "total score: %f", total_score_collective_fov);
 }
 
 void TotalScoreCollectiveFovLogger::logTotalScoreCollectiveFOV()
 {
-
     cv::Mat robots_all_pasted_img;
     bool got_all_images = true;
     allRobotsImagesPasted(robots_all_pasted_img, got_all_images);
@@ -221,7 +243,7 @@ void TotalScoreCollectiveFovLogger::logTotalScoreCollectiveFOV()
     score_data_.emplace_back(time_elapsed, total_score_collective_fov);
     pic_name_counter_++;
 
-    std::cout << "total score: " << total_score_collective_fov << std::endl;
+    RCLCPP_INFO(this->get_logger(), "total score: %f", total_score_collective_fov);
 }
 
 void TotalScoreCollectiveFovLogger::writeDataToCSV()
@@ -239,13 +261,16 @@ void TotalScoreCollectiveFovLogger::writeDataToCSV()
         file.close();
     }
     else {
-        std::cout << "Failed to open file for writing.\n";
+        RCLCPP_ERROR(this->get_logger(), "Failed to open file '%s' for writing.", filepath.c_str());
     }
 }
 
 double TotalScoreCollectiveFovLogger::computeWeightedScoreSingleImage(const cv::Mat& img)
 {
-    cv::cvtColor(img, img, cv::COLOR_BGR2RGB); // NOTE double check if you need to do this to input
+    // cv::cvtColor(img, img, cv::COLOR_BGR2RGB); // NOTE double check if you need to do this to input
+    cv::Mat rgb_img;
+    cv::cvtColor(img, rgb_img, cv::COLOR_BGR2RGB);  // 使用临时变量保存
+
     double score = 0.0;
 
     if (is_server_experiment_ == 1) {
@@ -408,9 +433,9 @@ void TotalScoreCollectiveFovLogger::allRobotsImagesPasted(cv::Mat& mask_returned
     // PSEUDOCODE get each image, cam orient, and pose from robots_ids_images_map_ and paste them onto a mask at their correct poses and angles
 
     // FIND RECTANGLE CORNERS*****
-    std::map<int, std::pair<geometry_msgs::Pose, int>> robot_poses_and_orientations;
+    std::map<int, std::pair<geometry_msgs::msg::Pose, int>> robot_poses_and_orientations;
     for (const auto& robot : robots_ids_images_map_) {
-        std::pair<geometry_msgs::Pose, int> pose_cam_orient;
+        std::pair<geometry_msgs::msg::Pose, int> pose_cam_orient;
         pose_cam_orient.first = robot.second.pose;
         pose_cam_orient.second = robot.second.camera_orientation;
         robot_poses_and_orientations[robot.first] = pose_cam_orient;
@@ -535,8 +560,8 @@ void TotalScoreCollectiveFovLogger::allRobotsImagesPasted(cv::Mat& mask_returned
 void TotalScoreCollectiveFovLogger::saveImage(std::vector<ImageResponse>& response)
 {
     for (const ImageResponse& image_info : response) {
-        std::cout << "Image uint8 size: " << image_info.image_data_uint8.size() << std::endl;
-        std::cout << "Image float size: " << image_info.image_data_float.size() << std::endl;
+        RCLCPP_INFO(this->get_logger(), "Image uint8 size: %zu", image_info.image_data_uint8.size());
+        RCLCPP_INFO(this->get_logger(), "Image float size: %zu", image_info.image_data_float.size());
 
         std::string file_path = FileSystem::combine(img_save_path_, std::to_string(image_info.time_stamp));
         if (image_info.pixels_as_float) {
@@ -560,8 +585,9 @@ void TotalScoreCollectiveFovLogger::saveImageCvMat(cv::Mat& image, const std::st
 void TotalScoreCollectiveFovLogger::viewImage(std::vector<ImageResponse>& response)
 {
     for (const ImageResponse& image_info : response) {
-        std::cout << "Image uint8 size: " << image_info.image_data_uint8.size() << std::endl;
-        std::cout << "Image float size: " << image_info.image_data_float.size() << std::endl;
+        RCLCPP_INFO(this->get_logger(), "Image uint8 size: %zu", image_info.image_data_uint8.size());
+        RCLCPP_INFO(this->get_logger(), "Image float size: %zu", image_info.image_data_float.size());
+
 
         cv::Mat image;
         if (image_info.pixels_as_float) {
@@ -685,24 +711,61 @@ bool TotalScoreCollectiveFovLogger::areAllValuesTrue()
     return true; // All values are true
 }
 
+template<typename MessageT>
+typename MessageT::SharedPtr waitForMessage(
+        const std::string & topic,
+        const std::chrono::duration<double> timeout)
+{
+    // Create a promise and future to asynchronously wait for the incoming message
+    auto promise = std::make_shared<std::promise<typename MessageT::SharedPtr>>();
+    auto future = promise->get_future();
+    // Create a subscriber that sets the received message into the promise
+    auto subscription = this->create_subscription<MessageT>(
+        topic,
+        10,  // Queue size (adjustable as needed)
+        [promise](typename MessageT::SharedPtr msg) {
+            // Check if promise hasn't been set yet, then set received message
+            if (promise->get_future().valid()) {
+                promise->set_value(msg);
+            }
+        }
+    );
+    // Record start time for timeout tracking
+    auto start_time = std::chrono::steady_clock::now();
+    // Define loop rate (frequency) for spinning
+    rclcpp::WallRate loop_rate(50);  // Spin at 50 Hz, adjust as desired
+    typename MessageT::SharedPtr result_msg = nullptr;
+    // Loop continuously until the message is received or timeout occurs
+    while (rclcpp::ok()) {
+        // Execute pending callbacks
+        rclcpp::spin_some(this->get_node_base_interface());
+        // Check if future is ready (message received)
+        if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+            result_msg = future.get();  // Retrieve the received message
+            break;
+        }
+        // Check if timeout has been reached
+        if (std::chrono::steady_clock::now() - start_time > timeout) {
+            // Timeout reached without receiving a message
+            break;
+        }
+        // Sleep to maintain loop frequency
+        loop_rate.sleep();
+    }
+    // Return the received message or nullptr if timeout occurred
+    return result_msg;
+}
+
+
+
+
 int main(int argc, char** argv)
 {
-    // Initialize ROS node
-    ros::init(argc, argv, "total_score_collectivFOV_logger");
-    ros::NodeHandle nh_tscfl;
-
-    TotalScoreCollectiveFovLogger node(nh_tscfl);
-
-    // ros::spin();
-    // ros::waitForShutdown(); // use with asyncspinner
-
-    while (ros::ok()) {
-        // ros::spinOnce();
-        ros::spin();
-        // ros::waitForShutdown();  // use with asyncspinner
-    }
-
-    node.writeDataToCSV();
-    ROS_INFO("Data saved to CSV file.");
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared<TotalScoreCollectiveFovLogger>(); 
+    rclcpp::spin(node);
+    node->writeDataToCSV();
+    rclcpp::shutdown();
     return 0;
 }
+
