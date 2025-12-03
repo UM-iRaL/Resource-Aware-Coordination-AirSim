@@ -61,7 +61,6 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_ros
   tf2_sensor_msgs
   airsim_ros_pkgs
-  multi_target_tracking
 )
 
 ## System dependencies are found with CMake's conventions
