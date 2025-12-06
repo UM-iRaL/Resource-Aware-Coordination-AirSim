@@ -16,7 +16,6 @@ NOTE: This header contains the algorithms RBG and BSG only; for RAG-H view multi
 #include <airsim_ros_pkgs/NeighborsArray.h>
 // #include <multi_target_tracking/PursuerEvaderData.h>
 // #include <multi_target_tracking/PursuerEvaderDataArray.h>
-#include <multi_target_tracking/MarginalGainRAG.h>
 #include <image_covering_coordination/ImageCovering.h>
 
 // Airsim library
